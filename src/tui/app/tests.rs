@@ -1092,6 +1092,22 @@ fn test_alignment_status_shows_current_and_saved_defaults() {
 }
 
 #[test]
+fn test_toggle_centered_mode_persists_default_alignment() {
+    with_temp_jcode_home(|| {
+        crate::config::Config::set_display_centered(true).expect("seed centered default");
+
+        let mut app = create_test_app();
+        assert!(app.centered_mode());
+
+        app.toggle_centered_mode();
+        assert!(!app.centered_mode());
+
+        let cfg = crate::config::Config::load();
+        assert!(!cfg.display.centered);
+    });
+}
+
+#[test]
 fn test_alignment_invalid_usage_shows_error() {
     let mut app = create_test_app();
     app.input = "/alignment diagonal".to_string();
@@ -4270,6 +4286,107 @@ fn test_model_picker_cursor_selection_prefixes_model() {
         Some("cursor:composer-2-fast")
     );
     assert!(app.picker_state.is_none());
+}
+
+#[test]
+fn test_model_picker_openrouter_openai_selection_uses_openai_namespace() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_model = Some("gpt-5.4".to_string());
+    app.remote_available_models = vec!["gpt-5.4".to_string()];
+    app.remote_model_routes = vec![crate::provider::ModelRoute {
+        model: "gpt-5.4".to_string(),
+        provider: "DeepInfra".to_string(),
+        api_method: "openrouter".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    }];
+
+    app.open_model_picker();
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .expect("openrouter openai model should be selectable");
+
+    assert_eq!(
+        app.pending_model_switch.as_deref(),
+        Some("openai/gpt-5.4@DeepInfra")
+    );
+    assert!(app.picker_state.is_none());
+}
+
+#[test]
+fn test_model_picker_shows_oauth_and_openrouter_variants_for_same_model() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_model = Some("claude-opus-4-6".to_string());
+    app.remote_available_models = vec!["claude-opus-4-6".to_string()];
+    app.remote_model_routes = vec![
+        crate::provider::ModelRoute {
+            model: "claude-opus-4-6".to_string(),
+            provider: "Anthropic".to_string(),
+            api_method: "claude-oauth".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        },
+        crate::provider::ModelRoute {
+            model: "claude-opus-4-6".to_string(),
+            provider: "OpenRouter".to_string(),
+            api_method: "openrouter".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        },
+    ];
+
+    app.open_model_picker();
+
+    let picker = app
+        .picker_state
+        .as_ref()
+        .expect("model picker should be open");
+    let variants: Vec<_> = picker
+        .models
+        .iter()
+        .filter(|m| m.name == "claude-opus-4-6")
+        .collect();
+
+    assert_eq!(
+        variants.len(),
+        2,
+        "expected two variants for same model when oauth + openrouter both exist"
+    );
+    assert!(variants
+        .iter()
+        .any(|entry| entry.routes.iter().all(|route| route.api_method == "claude-oauth")));
+    assert!(variants
+        .iter()
+        .any(|entry| entry.routes.iter().all(|route| route.api_method == "openrouter")));
+}
+
+#[test]
+fn test_model_picker_selection_persists_last_selected_model() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_model = Some("gpt-5.4".to_string());
+        app.remote_available_models = vec!["gpt-5.4".to_string()];
+        app.remote_model_routes = vec![crate::provider::ModelRoute {
+            model: "gpt-5.4".to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "openai-oauth".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }];
+
+        app.open_model_picker();
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .expect("model selection should succeed");
+
+        let cfg = crate::config::Config::load();
+        assert_eq!(cfg.provider.last_selected_model.as_deref(), Some("gpt-5.4"));
+    });
 }
 
 #[test]

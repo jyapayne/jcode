@@ -140,10 +140,56 @@ fn account_picker_state_label(entry: &crate::tui::ModelEntry) -> &'static str {
     }
 }
 
+fn compute_model_column_widths(
+    max_model_len: usize,
+    max_provider_len: usize,
+    max_via_len: usize,
+    budget: usize,
+) -> (usize, usize, usize) {
+    if budget == 0 {
+        return (0, 0, 0);
+    }
+
+    let provider_min = 8usize;
+    let via_min = 4usize;
+    let model_min = 6usize;
+    let minimum_total = provider_min + via_min + model_min;
+    if budget <= minimum_total {
+        let provider = provider_min.min(budget);
+        let remaining_after_provider = budget.saturating_sub(provider);
+        let via = via_min.min(remaining_after_provider);
+        let model = remaining_after_provider.saturating_sub(via);
+        return (provider, via, model);
+    }
+
+    let mut provider_width = (max_provider_len + 1).max(provider_min);
+    let mut via_width = (max_via_len + 1).max(via_min);
+    let mut model_width = max_model_len.max(model_min);
+    let mut overflow = provider_width
+        .saturating_add(via_width)
+        .saturating_add(model_width)
+        .saturating_sub(budget);
+
+    if overflow > 0 {
+        let model_reduction = overflow.min(model_width.saturating_sub(model_min));
+        model_width = model_width.saturating_sub(model_reduction);
+        overflow = overflow.saturating_sub(model_reduction);
+    }
+    if overflow > 0 {
+        let via_reduction = overflow.min(via_width.saturating_sub(via_min));
+        via_width = via_width.saturating_sub(via_reduction);
+        overflow = overflow.saturating_sub(via_reduction);
+    }
+    if overflow > 0 {
+        let provider_reduction = overflow.min(provider_width.saturating_sub(provider_min));
+        provider_width = provider_width.saturating_sub(provider_reduction);
+    }
+
+    (provider_width, via_width, model_width)
+}
+
 fn picker_render_width(picker: &crate::tui::PickerState, max_width: usize) -> usize {
     let marker_width = 3usize;
-    let is_preview = picker.preview;
-
     if picker.kind == crate::tui::PickerKind::Account {
         let show_provider_badge = account_picker_shows_provider_badge(picker);
         let mut max_title_len = display_width("ACCOUNT");
@@ -199,31 +245,9 @@ fn picker_render_width(picker: &crate::tui::PickerState, max_width: usize) -> us
         }
     }
 
-    let mut provider_width = (max_provider_len + 1).min(if is_preview { 16 } else { 20 });
-    let mut via_width = (max_via_len + 1).min(12);
-    let model_cap = if is_preview { 42 } else { 56 };
-    let min_model_width = max_model_len.min(8).max(6);
-
     let budget = max_width.saturating_sub(marker_width);
-    if provider_width + via_width + min_model_width > budget {
-        let provider_floor = 8usize.min(provider_width);
-        let via_floor = 4usize.min(via_width);
-
-        let provider_reduction = (provider_width + via_width + min_model_width)
-            .saturating_sub(budget)
-            .min(provider_width.saturating_sub(provider_floor));
-        provider_width = provider_width.saturating_sub(provider_reduction);
-
-        let via_reduction = (provider_width + via_width + min_model_width)
-            .saturating_sub(budget)
-            .min(via_width.saturating_sub(via_floor));
-        via_width = via_width.saturating_sub(via_reduction);
-    }
-
-    let model_budget = budget.saturating_sub(provider_width + via_width);
-    let model_width = max_model_len
-        .min(model_cap)
-        .min(model_budget.max(min_model_width.min(model_budget)));
+    let (provider_width, via_width, model_width) =
+        compute_model_column_widths(max_model_len, max_provider_len, max_via_len, budget);
 
     marker_width + provider_width + via_width + model_width
 }
@@ -285,6 +309,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
     let col = picker.column;
     let is_preview = picker.preview;
     let is_account_picker = picker.kind == crate::tui::PickerKind::Account;
+    let centered_mode = app.centered_mode();
 
     let col_focus_style = Style::default().fg(Color::White).bold().underlined();
     let col_dim_style = Style::default().fg(dim_color());
@@ -292,15 +317,22 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
 
     let show_account_provider_badge =
         is_account_picker && account_picker_shows_provider_badge(picker);
-    let mut max_provider_len = 0usize;
+    let mut max_model_len = display_width("MODEL");
+    let mut max_provider_len = display_width("PROVIDER");
     let mut max_via_len = 0usize;
     let mut max_account_title_len = display_width("ACCOUNT");
     let mut max_account_state_len = display_width("STATE");
     for &fi in &picker.filtered {
         let entry = &picker.models[fi];
+        max_model_len = max_model_len.max(display_width(picker_entry_display_name(entry).as_str()));
         let route = entry.routes.get(entry.selected_route);
         if let Some(r) = route {
-            max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
+            let provider_label = if entry.routes.len() > 1 {
+                format!("{} ({})", r.provider, entry.routes.len())
+            } else {
+                r.provider.clone()
+            };
+            max_provider_len = max_provider_len.max(display_width(provider_label.as_str()));
             max_via_len = max_via_len.max(display_width(r.api_method.as_str()));
         }
         if is_account_picker {
@@ -341,12 +373,14 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
     let height = inner.height as usize;
     let width = inner.width as usize;
 
-    let provider_cap = if is_preview { 16 } else { 20 };
-    let provider_width = (max_provider_len + 1).max(8).min(provider_cap);
-    let via_width = (max_via_len + 1).max(4).min(12);
+    let (provider_width, via_width, model_width) = compute_model_column_widths(
+        max_model_len,
+        max_provider_len,
+        max_via_len,
+        width.saturating_sub(marker_width),
+    );
     let account_state_width = (max_account_state_len + 1).max(7).min(10);
     let account_title_width = width.saturating_sub(marker_width + account_state_width);
-    let model_width = width.saturating_sub(marker_width + provider_width + via_width);
 
     let (col_widths, col_labels, col_logical): ([usize; 3], [&str; 3], [usize; 3]) =
         if is_account_picker {
@@ -391,7 +425,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
         col_dim_style
     };
     header_spans.push(Span::styled(
-        if is_preview {
+        if is_preview && centered_mode {
             format!("{:^w$}", second_label, w = second_w)
         } else {
             format!("{:<w$}", second_label, w = second_w)
@@ -608,7 +642,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
             continue;
         }
 
-        let padded_model = if is_preview {
+        let padded_model = if is_preview && centered_mode {
             pad_center_display(display_name.as_str(), model_width)
         } else {
             pad_left_display(display_name.as_str(), model_width)
@@ -616,7 +650,7 @@ pub(super) fn draw_picker_line(frame: &mut Frame, app: &dyn TuiState, area: Rect
 
         let match_positions = if !picker.filter.is_empty() {
             let raw = fuzzy_match_positions(&picker.filter, &entry.name);
-            if is_preview && !raw.is_empty() {
+            if is_preview && centered_mode && !raw.is_empty() {
                 let name_len = display_width(display_name.as_str());
                 let pad = if name_len < model_width {
                     (model_width - name_len) / 2
@@ -821,6 +855,80 @@ mod tests {
         let width = picker_render_width(&picker, 120);
         assert!(width < 120, "picker should not expand to full width");
         assert!(width >= 20, "picker should remain wide enough for content");
+    }
+
+    #[test]
+    fn preview_picker_render_width_is_wider_for_long_model_routes() {
+        let picker = crate::tui::PickerState {
+            kind: crate::tui::PickerKind::Model,
+            filtered: vec![0],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: true,
+            models: vec![crate::tui::ModelEntry {
+                name: "anthropic/claude-sonnet-4-20251101".to_string(),
+                routes: vec![crate::tui::RouteOption {
+                    provider: "OpenAI".to_string(),
+                    api_method: "openai-oauth".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    estimated_reference_cost_micros: None,
+                }],
+                selection: crate::tui::PickerSelection::Model,
+                selected_route: 0,
+                is_current: true,
+                is_default: false,
+                recommended: false,
+                recommendation_rank: usize::MAX,
+                old: false,
+                created_date: None,
+                effort: None,
+            }],
+        };
+
+        let width = picker_render_width(&picker, 140);
+        assert!(
+            width >= 55,
+            "preview picker should allocate width from preview content, got {width}"
+        );
+    }
+
+    #[test]
+    fn picker_render_width_uses_max_content_when_budget_allows() {
+        let picker = crate::tui::PickerState {
+            kind: crate::tui::PickerKind::Model,
+            filtered: vec![0],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: true,
+            models: vec![crate::tui::ModelEntry {
+                name: "anthropic/claude-opus-4-1-20250805".to_string(),
+                routes: vec![crate::tui::RouteOption {
+                    provider: "VeryLongProviderName".to_string(),
+                    api_method: "very-long-oauth-method-name".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    estimated_reference_cost_micros: None,
+                }],
+                selection: crate::tui::PickerSelection::Model,
+                selected_route: 0,
+                is_current: true,
+                is_default: false,
+                recommended: false,
+                recommendation_rank: usize::MAX,
+                old: false,
+                created_date: None,
+                effort: None,
+            }],
+        };
+
+        let width = picker_render_width(&picker, 200);
+        assert!(
+            width >= 85,
+            "picker should scale to near full content width when budget allows, got {width}"
+        );
     }
 
     #[test]

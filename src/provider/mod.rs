@@ -698,14 +698,19 @@ impl MultiProvider {
             forced_provider,
         };
 
-        if let Some(ref model) = cfg.provider.default_model {
+        if let Some(ref model) = cfg
+            .provider
+            .last_selected_model
+            .as_ref()
+            .or(cfg.provider.default_model.as_ref())
+        {
             if let Err(e) = result.set_model(model) {
                 crate::logging::warn(&format!(
-                    "Failed to apply default_model '{}' from config: {}",
+                    "Failed to apply startup model '{}' from config: {}",
                     model, e
                 ));
             } else {
-                crate::logging::info(&format!("Applied default model '{}' from config", model));
+                crate::logging::info(&format!("Applied startup model '{}' from config", model));
             }
         }
 

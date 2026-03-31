@@ -2110,6 +2110,12 @@ impl App {
             "Left-aligned"
         };
         self.set_status_notice(format!("Layout: {}", mode));
+        if let Err(error) = crate::config::Config::set_display_centered(self.centered) {
+            crate::logging::warn(&format!(
+                "Failed to persist display.centered={} after toggle: {}",
+                self.centered, error
+            ));
+        }
         self.prewarm_focused_side_panel();
     }
 

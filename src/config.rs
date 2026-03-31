@@ -586,6 +586,8 @@ pub struct ProviderConfig {
     pub default_model: Option<String>,
     /// Default provider to use (claude|openai|copilot|openrouter)
     pub default_provider: Option<String>,
+    /// Last model selected interactively in the TUI model picker.
+    pub last_selected_model: Option<String>,
     /// Reasoning effort for OpenAI Responses API (none|low|medium|high|xhigh)
     pub openai_reasoning_effort: Option<String>,
     /// OpenAI transport mode (auto|websocket|https)
@@ -608,6 +610,7 @@ impl Default for ProviderConfig {
         Self {
             default_model: None,
             default_provider: None,
+            last_selected_model: None,
             openai_reasoning_effort: Some("high".to_string()),
             openai_transport: None,
             openai_service_tier: None,
@@ -1239,6 +1242,18 @@ impl Config {
             "Saved default model: {}, provider: {}",
             model.unwrap_or("(none)"),
             provider.unwrap_or("(auto)")
+        ));
+        Ok(())
+    }
+
+    /// Persist the most recently selected model from interactive picker usage.
+    pub fn set_last_selected_model(model: Option<&str>) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.provider.last_selected_model = model.map(|s| s.to_string());
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved last_selected_model to config: {}",
+            model.unwrap_or("(none)")
         ));
         Ok(())
     }

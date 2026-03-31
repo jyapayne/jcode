@@ -3203,7 +3203,13 @@ fn morph_lines_to_header(
             .get(header_idx)
             .and_then(|l| l.alignment)
             .or_else(|| anim_lines.get(anim_idx).and_then(|l| l.alignment))
-            .unwrap_or(ratatui::layout::Alignment::Center);
+            .unwrap_or_else(|| {
+                if crate::config::config().display.centered {
+                    ratatui::layout::Alignment::Center
+                } else {
+                    ratatui::layout::Alignment::Left
+                }
+            });
 
         result.push(Line::from(spans).alignment(align));
     }

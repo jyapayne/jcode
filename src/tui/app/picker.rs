@@ -115,6 +115,20 @@ fn model_entry_base_name(entry: &ModelEntry) -> String {
     }
 }
 
+fn openrouter_pinned_model_spec(model: &str, provider: &str) -> String {
+    if model.contains('/') {
+        return format!("{}@{}", model, provider);
+    }
+
+    let namespace = match crate::provider::provider_for_model(model) {
+        Some("openai") => "openai",
+        Some("claude") => "anthropic",
+        _ => "anthropic",
+    };
+
+    format!("{}/{}@{}", namespace, model, provider)
+}
+
 fn model_entry_saved_spec(entry: &ModelEntry) -> String {
     let bare_name = model_entry_base_name(entry);
     let route = entry.routes.get(entry.selected_route);
@@ -124,16 +138,55 @@ fn model_entry_saved_spec(entry: &ModelEntry) -> String {
         } else if route.api_method == "cursor" {
             format!("cursor:{}", bare_name)
         } else if route.api_method == "openrouter" && route.provider != "auto" {
-            if bare_name.contains('/') {
-                format!("{}@{}", bare_name, route.provider)
-            } else {
-                format!("anthropic/{}@{}", bare_name, route.provider)
-            }
+            openrouter_pinned_model_spec(&bare_name, &route.provider)
         } else {
             bare_name
         }
     } else {
         bare_name
+    }
+}
+
+fn split_model_route_variants(routes: &[RouteOption]) -> Vec<Vec<RouteOption>> {
+    let mut openrouter_routes = Vec::new();
+    let mut direct_routes = Vec::new();
+
+    for route in routes {
+        if route.api_method == "openrouter" {
+            openrouter_routes.push(route.clone());
+        } else {
+            direct_routes.push(route.clone());
+        }
+    }
+
+    if !openrouter_routes.is_empty() && !direct_routes.is_empty() {
+        vec![direct_routes, openrouter_routes]
+    } else {
+        vec![routes.to_vec()]
+    }
+}
+
+fn model_matches_current_route(model_name: &str, current_model: &str, route: &RouteOption) -> bool {
+    let normalized_current = current_model
+        .strip_prefix("copilot:")
+        .or_else(|| current_model.strip_prefix("cursor:"))
+        .unwrap_or(current_model);
+
+    if route.api_method == "openrouter" {
+        if !normalized_current.contains('@') {
+            return normalized_current == model_name;
+        }
+        let pinned = normalized_current
+            .split('@')
+            .next()
+            .unwrap_or(normalized_current);
+        pinned == model_name || pinned.ends_with(&format!("/{}", model_name))
+    } else {
+        let bare = normalized_current
+            .split('@')
+            .next()
+            .unwrap_or(normalized_current);
+        bare == model_name && !normalized_current.contains('@')
     }
 }
 
@@ -738,6 +791,7 @@ impl App {
         for name in &model_order {
             let mut entry_routes = model_routes.remove(name).unwrap_or_default();
             entry_routes.sort_by_key(route_sort_key);
+            let route_variants = split_model_route_variants(&entry_routes);
 
             let is_openai_model = crate::provider::ALL_OPENAI_MODELS.contains(&name.as_str());
 
@@ -752,61 +806,69 @@ impl App {
                         other => other,
                     };
                     let display_name = format!("{} ({})", name, effort_label);
-                    let is_this_current =
-                        *name == current_model && current_effort.as_deref() == Some(*effort);
                     let or_created = crate::provider::openrouter::model_created_timestamp(name);
-                    models.push(ModelEntry {
-                        name: display_name,
-                        routes: entry_routes.clone(),
-                        selection: PickerSelection::Model,
-                        selected_route: 0,
-                        is_current: is_this_current,
-                        recommended: RECOMMENDED_MODELS.contains(&name.as_str())
-                            && (*effort == "xhigh" || *effort == "high")
-                            && (!(CLAUDE_OAUTH_ONLY_MODELS.contains(&name.as_str())
-                                || OPENAI_OAUTH_ONLY_MODELS.contains(&name.as_str())
-                                || COPILOT_OAUTH_MODELS.contains(&name.as_str()))
-                                || entry_routes.iter().any(|r| {
-                                    (r.api_method == "claude-oauth"
-                                        || r.api_method == "openai-oauth"
-                                        || r.api_method == "copilot")
-                                        && r.available
-                                })),
-                        recommendation_rank: recommendation_rank(name, RECOMMENDED_MODELS),
-                        old: old_threshold_secs > 0
-                            && or_created.map(|t| t < old_threshold_secs).unwrap_or(false),
-                        created_date: or_created.map(format_created),
-                        effort: Some(effort.to_string()),
-                        is_default: is_config_default(name),
-                    });
+                    for routes_variant in &route_variants {
+                        let is_this_current = current_effort.as_deref() == Some(*effort)
+                            && routes_variant
+                                .iter()
+                                .any(|r| model_matches_current_route(name, &current_model, r));
+                        models.push(ModelEntry {
+                            name: display_name.clone(),
+                            routes: routes_variant.clone(),
+                            selection: PickerSelection::Model,
+                            selected_route: 0,
+                            is_current: is_this_current,
+                            recommended: RECOMMENDED_MODELS.contains(&name.as_str())
+                                && (*effort == "xhigh" || *effort == "high")
+                                && (!(CLAUDE_OAUTH_ONLY_MODELS.contains(&name.as_str())
+                                    || OPENAI_OAUTH_ONLY_MODELS.contains(&name.as_str())
+                                    || COPILOT_OAUTH_MODELS.contains(&name.as_str()))
+                                    || routes_variant.iter().any(|r| {
+                                        (r.api_method == "claude-oauth"
+                                            || r.api_method == "openai-oauth"
+                                            || r.api_method == "copilot")
+                                            && r.available
+                                    })),
+                            recommendation_rank: recommendation_rank(name, RECOMMENDED_MODELS),
+                            old: old_threshold_secs > 0
+                                && or_created.map(|t| t < old_threshold_secs).unwrap_or(false),
+                            created_date: or_created.map(format_created),
+                            effort: Some(effort.to_string()),
+                            is_default: is_config_default(name),
+                        });
+                    }
                 }
             } else {
                 let or_created = crate::provider::openrouter::model_created_timestamp(name);
                 let is_old = old_threshold_secs > 0
                     && or_created.map(|t| t < old_threshold_secs).unwrap_or(false);
-                let is_recommended = RECOMMENDED_MODELS.contains(&name.as_str())
-                    && (!(CLAUDE_OAUTH_ONLY_MODELS.contains(&name.as_str())
-                        || OPENAI_OAUTH_ONLY_MODELS.contains(&name.as_str())
-                        || COPILOT_OAUTH_MODELS.contains(&name.as_str()))
-                        || entry_routes.iter().any(|r| {
-                            (r.api_method == "claude-oauth"
-                                || r.api_method == "openai-oauth"
-                                || r.api_method == "copilot")
-                                && r.available
-                        }));
-                models.push(ModelEntry {
-                    name: name.clone(),
-                    routes: entry_routes,
-                    selection: PickerSelection::Model,
-                    selected_route: 0,
-                    is_current: *name == current_model,
-                    recommended: is_recommended,
-                    recommendation_rank: recommendation_rank(name, RECOMMENDED_MODELS),
-                    old: is_old,
-                    created_date: or_created.map(format_created),
-                    effort: None,
-                    is_default: is_config_default(name),
-                });
+                for routes_variant in route_variants {
+                    let is_recommended = RECOMMENDED_MODELS.contains(&name.as_str())
+                        && (!(CLAUDE_OAUTH_ONLY_MODELS.contains(&name.as_str())
+                            || OPENAI_OAUTH_ONLY_MODELS.contains(&name.as_str())
+                            || COPILOT_OAUTH_MODELS.contains(&name.as_str()))
+                            || routes_variant.iter().any(|r| {
+                                (r.api_method == "claude-oauth"
+                                    || r.api_method == "openai-oauth"
+                                    || r.api_method == "copilot")
+                                    && r.available
+                            }));
+                    models.push(ModelEntry {
+                        name: name.clone(),
+                        routes: routes_variant.clone(),
+                        selection: PickerSelection::Model,
+                        selected_route: 0,
+                        is_current: routes_variant
+                            .iter()
+                            .any(|r| model_matches_current_route(name, &current_model, r)),
+                        recommended: is_recommended,
+                        recommendation_rank: recommendation_rank(name, RECOMMENDED_MODELS),
+                        old: is_old,
+                        created_date: or_created.map(format_created),
+                        effort: None,
+                        is_default: is_config_default(name),
+                    });
+                }
             }
         }
 
@@ -1527,11 +1589,7 @@ impl App {
                         } else if r.api_method == "cursor" {
                             format!("cursor:{}", bare_name)
                         } else if r.api_method == "openrouter" && r.provider != "auto" {
-                            if bare_name.contains('/') {
-                                format!("{}@{}", bare_name, r.provider)
-                            } else {
-                                format!("anthropic/{}@{}", bare_name, r.provider)
-                            }
+                            openrouter_pinned_model_spec(&bare_name, &r.provider)
                         } else if r.api_method == "openrouter" {
                             bare_name.clone()
                         } else {
@@ -1659,11 +1717,7 @@ impl App {
                         let bare_name = model_entry_base_name(&entry);
 
                         let spec = if route.api_method == "openrouter" && route.provider != "auto" {
-                            if entry.name.contains('/') {
-                                format!("{}@{}", entry.name, route.provider)
-                            } else {
-                                format!("anthropic/{}@{}", entry.name, route.provider)
-                            }
+                            openrouter_pinned_model_spec(&entry.name, &route.provider)
                         } else if route.api_method == "openrouter" {
                             entry.name.clone()
                         } else if route.api_method == "cursor" {
@@ -1682,6 +1736,14 @@ impl App {
 
                         self.picker_state = None;
                         self.upstream_provider = None;
+                        if let Err(error) =
+                            crate::config::Config::set_last_selected_model(Some(&spec))
+                        {
+                            crate::logging::warn(&format!(
+                                "Failed to persist last_selected_model '{}': {}",
+                                spec, error
+                            ));
+                        }
                         if self.is_remote {
                             self.pending_model_switch = Some(spec);
                         } else {
@@ -1806,7 +1868,11 @@ impl App {
                             .unwrap_or("");
                         let state = match &m.selection {
                             PickerSelection::Account(AccountPickerSelection::Switch { .. }) => {
-                                if m.is_current { "active" } else { "saved" }
+                                if m.is_current {
+                                    "active"
+                                } else {
+                                    "saved"
+                                }
                             }
                             PickerSelection::Account(AccountPickerSelection::Add { .. }) => "add",
                             PickerSelection::Account(AccountPickerSelection::Replace {

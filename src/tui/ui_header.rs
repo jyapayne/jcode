@@ -276,7 +276,11 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     let nice_model = format_model_name(&short_model);
     let build_info = binary_age().unwrap_or_else(|| "unknown".to_string());
     let centered = app.centered_mode();
-    let align = Alignment::Center;
+    let align = if centered {
+        Alignment::Center
+    } else {
+        Alignment::Left
+    };
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -391,7 +395,11 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
 
 pub(crate) fn build_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    let align = ratatui::layout::Alignment::Center;
+    let align = if app.centered_mode() {
+        ratatui::layout::Alignment::Center
+    } else {
+        ratatui::layout::Alignment::Left
+    };
 
     let model = app.provider_model();
     let provider_name = app.provider_name();
@@ -690,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn left_aligned_mode_keeps_persistent_header_centered() {
+    fn left_aligned_mode_left_aligns_persistent_header() {
         let mut app = create_test_app();
         app.set_centered(false);
 
@@ -704,13 +712,13 @@ mod tests {
         assert!(
             non_empty
                 .iter()
-                .all(|line| line.alignment == Some(Alignment::Center)),
-            "persistent header should remain centered in left-aligned mode: {non_empty:?}"
+                .all(|line| line.alignment == Some(Alignment::Left)),
+            "persistent header should be left-aligned in left-aligned mode: {non_empty:?}"
         );
     }
 
     #[test]
-    fn left_aligned_mode_keeps_secondary_header_centered() {
+    fn left_aligned_mode_left_aligns_secondary_header() {
         let mut app = create_test_app();
         app.set_centered(false);
 
@@ -724,8 +732,40 @@ mod tests {
         assert!(
             non_empty
                 .iter()
+                .all(|line| line.alignment == Some(Alignment::Left)),
+            "header detail lines should be left-aligned in left-aligned mode: {non_empty:?}"
+        );
+    }
+
+    #[test]
+    fn centered_mode_keeps_headers_centered() {
+        let mut app = create_test_app();
+        app.set_centered(true);
+
+        let persistent = build_persistent_header(&app, 80);
+        let persistent_non_empty: Vec<&Line<'_>> = persistent
+            .iter()
+            .filter(|line| !line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .collect();
+        assert!(!persistent_non_empty.is_empty(), "expected persistent header lines");
+        assert!(
+            persistent_non_empty
+                .iter()
                 .all(|line| line.alignment == Some(Alignment::Center)),
-            "header detail lines should remain centered in left-aligned mode: {non_empty:?}"
+            "persistent header should be centered in centered mode: {persistent_non_empty:?}"
+        );
+
+        let secondary = build_header_lines(&app, 80);
+        let secondary_non_empty: Vec<&Line<'_>> = secondary
+            .iter()
+            .filter(|line| !line.spans.iter().all(|span| span.content.trim().is_empty()))
+            .collect();
+        assert!(!secondary_non_empty.is_empty(), "expected header detail lines");
+        assert!(
+            secondary_non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Center)),
+            "header detail lines should be centered in centered mode: {secondary_non_empty:?}"
         );
     }
 }
