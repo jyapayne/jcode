@@ -103,6 +103,8 @@ pub struct Agent {
     memory_enabled: bool,
     /// Channel for tools to request stdin input from the user
     stdin_request_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::tool::StdinInputRequest>>,
+    /// Skills need reloading from the session working directory
+    skills_stale: bool,
 }
 
 impl Agent {
@@ -122,7 +124,7 @@ impl Agent {
         session: Session,
         allowed_tools: Option<HashSet<String>>,
     ) -> Self {
-        let skills = SkillRegistry::shared_snapshot();
+        let skills = Self::resolve_skills(&session);
         Self {
             provider,
             registry,
@@ -147,15 +149,42 @@ impl Agent {
             system_prompt_override: None,
             memory_enabled: crate::config::config().features.memory,
             stdin_request_tx: None,
+            skills_stale: false,
         }
     }
 
-    pub fn available_skill_names(&self) -> Vec<String> {
+    /// Resolve skills for a session: if the session has a working directory
+    /// that differs from the process CWD, load project-local skills from
+    /// that directory; otherwise use the process-wide shared snapshot.
+    fn resolve_skills(session: &Session) -> Arc<SkillRegistry> {
+        if let Some(ref wd) = session.working_dir {
+            let wd_path = std::path::Path::new(wd);
+            let is_process_cwd = std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd == wd_path)
+                .unwrap_or(false);
+            if !is_process_cwd {
+                return SkillRegistry::snapshot_for_dir(wd_path);
+            }
+        }
+        SkillRegistry::shared_snapshot()
+    }
+
+    pub fn available_skill_names(&mut self) -> Vec<String> {
+        self.ensure_skills_loaded();
         self.skills
             .list()
             .iter()
             .map(|skill| skill.name.clone())
             .collect()
+    }
+
+    /// Lazily reload skills from the session working directory when marked stale.
+    fn ensure_skills_loaded(&mut self) {
+        if self.skills_stale {
+            self.skills_stale = false;
+            self.skills = Self::resolve_skills(&self.session);
+        }
     }
 
     pub fn new(provider: Arc<dyn Provider>, registry: Registry) -> Self {
@@ -728,6 +757,10 @@ impl Agent {
             return;
         }
         self.session.working_dir = Some(dir.to_string());
+        // Mark skills as needing reload — actual loading happens lazily when
+        // skills are next accessed, avoiding slow I/O during the Subscribe
+        // handler (which is on the reload-handoff critical path).
+        self.skills_stale = true;
         self.log_env_snapshot("working_dir");
     }
 

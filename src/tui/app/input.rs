@@ -1660,7 +1660,7 @@ impl App {
 
         // Check for skill invocation
         if let Some(skill_name) = SkillRegistry::parse_invocation(&input) {
-            if let Some(skill) = self.skills.get(skill_name) {
+            let is_known = if let Some(skill) = self.skills.get(skill_name) {
                 self.active_skill = Some(skill_name.to_string());
                 self.push_display_message(DisplayMessage {
                     role: "system".to_string(),
@@ -1670,7 +1670,29 @@ impl App {
                     title: None,
                     tool_data: None,
                 });
+                true
+            } else if self.is_remote
+                && self
+                    .remote_skills
+                    .iter()
+                    .any(|s| s == skill_name)
+            {
+                // Skill exists on the server but not locally — activate by name
+                self.active_skill = Some(skill_name.to_string());
+                self.push_display_message(DisplayMessage {
+                    role: "system".to_string(),
+                    content: format!("Activated skill: {}", skill_name),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+                true
             } else {
+                false
+            };
+
+            if !is_known {
                 self.push_display_message(DisplayMessage {
                     role: "error".to_string(),
                     content: format!("Unknown skill: /{}", skill_name),

@@ -706,8 +706,14 @@ impl App {
             commands.push(("/server-reload".into(), "Force reload server binary"));
         }
 
-        for skill in self.skills.list() {
-            commands.push((format!("/{}", skill.name), "Activate skill"));
+        if self.is_remote && !self.remote_skills.is_empty() {
+            for name in &self.remote_skills {
+                commands.push((format!("/{}", name), "Activate skill"));
+            }
+        } else {
+            for skill in self.skills.list() {
+                commands.push((format!("/{}", skill.name), "Activate skill"));
+            }
         }
 
         commands

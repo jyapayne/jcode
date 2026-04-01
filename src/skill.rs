@@ -20,8 +20,8 @@ pub struct Skill {
 
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
-    name: String,
-    description: String,
+    name: Option<String>,
+    description: Option<String>,
     #[serde(rename = "allowed-tools")]
     allowed_tools: Option<String>,
 }
@@ -34,7 +34,7 @@ pub struct SkillRegistry {
 
 impl SkillRegistry {
     /// Load a process-wide shared immutable snapshot of skills for startup paths
-    /// that only need read access.
+    /// that only need read access.  Uses the process CWD for project-local skills.
     pub fn shared_snapshot() -> Arc<Self> {
         #[cfg(test)]
         {
@@ -48,6 +48,12 @@ impl SkillRegistry {
                 .get_or_init(|| Arc::new(SkillRegistry::load().unwrap_or_default()))
                 .clone()
         }
+    }
+
+    /// Load skills for a specific working directory.  Returns global skills
+    /// plus any project-local skills found under the given path.
+    pub fn snapshot_for_dir(working_dir: &Path) -> Arc<Self> {
+        Arc::new(Self::load_for_dir(Some(working_dir)).unwrap_or_default())
     }
 
     /// Import skills from Claude Code and Codex CLI on first run.
@@ -178,8 +184,19 @@ impl SkillRegistry {
             .unwrap_or_default()
     }
 
-    /// Load skills from all standard locations
+    /// Load skills from all standard locations, using the current working
+    /// directory for project-local skill paths.
     pub fn load() -> Result<Self> {
+        Self::load_for_dir(None)
+    }
+
+    /// Load skills for a specific working directory.  When `working_dir` is
+    /// `None`, falls back to `std::env::current_dir()`.
+    pub fn load_for_dir(working_dir: Option<&Path>) -> Result<Self> {
+        if !crate::config::config().features.skills {
+            return Ok(Self::default());
+        }
+
         // First-run import from Claude Code / Codex CLI
         Self::import_from_external();
 
@@ -193,16 +210,31 @@ impl SkillRegistry {
             }
         }
 
-        // Load from ./.jcode/skills/ (project-local jcode skills)
-        let local_jcode = Path::new(".jcode").join("skills");
+        let base = working_dir
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+
+        // Load from <working_dir>/.jcode/skills/ (project-local jcode skills)
+        let local_jcode = base.join(".jcode").join("skills");
         if local_jcode.exists() {
             registry.load_from_dir(&local_jcode)?;
         }
 
-        // Fallback: ./.claude/skills/ (project-local Claude skills for compatibility)
-        let local_claude = Path::new(".claude").join("skills");
+        // Fallback: <working_dir>/.claude/skills/ (project-local Claude skills for compatibility)
+        let local_claude = base.join(".claude").join("skills");
         if local_claude.exists() {
             registry.load_from_dir(&local_claude)?;
+        }
+
+        // Remove any skills the user has explicitly disabled
+        let disabled = &crate::config::config().features.disabled_skills;
+        if !disabled.is_empty() {
+            for name in disabled {
+                if registry.skills.remove(name).is_some() {
+                    crate::logging::info(&format!("Skill '{}' disabled via config", name));
+                }
+            }
         }
 
         Ok(registry)
@@ -242,9 +274,26 @@ impl SkillRegistry {
             .allowed_tools
             .map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
 
+        // Use frontmatter name, falling back to the parent directory name
+        let name = frontmatter
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| {
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(String::from)
+            })
+            .ok_or_else(|| anyhow::anyhow!("Skill has no name and no parent directory"))?;
+
+        let description = frontmatter
+            .description
+            .filter(|d| !d.trim().is_empty())
+            .unwrap_or_default();
+
         Ok(Skill {
-            name: frontmatter.name,
-            description: frontmatter.description,
+            name,
+            description,
             allowed_tools,
             content: body,
             path: path.to_path_buf(),

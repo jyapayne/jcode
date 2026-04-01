@@ -534,6 +534,10 @@ pub struct FeatureConfig {
     pub memory: bool,
     /// Enable swarm coordination features (default: true)
     pub swarm: bool,
+    /// Enable skill loading from ~/.jcode/skills/, .jcode/skills/, .claude/skills/ (default: true)
+    pub skills: bool,
+    /// Skill names to exclude from loading (e.g. ["web-search", "code-search"])
+    pub disabled_skills: Vec<String>,
     /// Inject timestamps into user messages and tool results sent to the model (default: true)
     pub message_timestamps: bool,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
@@ -545,6 +549,8 @@ impl Default for FeatureConfig {
         Self {
             memory: true,
             swarm: true,
+            skills: true,
+            disabled_skills: Vec::new(),
             message_timestamps: true,
             update_channel: UpdateChannel::default(),
         }
@@ -1490,6 +1496,10 @@ prompt_entry_animation = true
 memory = true
 # Swarm: multi-session coordination features
 swarm = true
+# Skills: load skill definitions from ~/.jcode/skills/, .jcode/skills/, .claude/skills/
+skills = true
+# Disable specific skills by name (e.g. ["web-search", "code-search"])
+# disabled_skills = ["web-search"]
 # Inject timestamps into user messages and tool results sent to the model
 message_timestamps = true
 # Update channel: "stable" (releases only) or "main" (latest commits on push)
@@ -1651,6 +1661,7 @@ desktop_notifications = true
 **Features:**
 - Memory: {}
 - Swarm: {}
+- Skills: {}
 - Message timestamps: {}
 - Update channel: {}
 
@@ -1757,6 +1768,7 @@ desktop_notifications = true
             self.display.redraw_fps,
             self.features.memory,
             self.features.swarm,
+            self.features.skills,
             self.features.message_timestamps,
             self.features.update_channel,
             self.provider

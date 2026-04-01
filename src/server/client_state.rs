@@ -103,7 +103,7 @@ pub(super) async fn send_history(
         provider_meta_ms,
         compaction_mode_ms,
     ) = {
-        let agent_guard = agent.lock().await;
+        let mut agent_guard = agent.lock().await;
         let agent_lock_ms = agent_lock_start.elapsed().as_millis();
         let provider = agent_guard.provider_handle();
 
