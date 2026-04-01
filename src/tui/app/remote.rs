@@ -1720,8 +1720,10 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     if app.pending_server_reload && !app.is_processing {
         app.pending_server_reload = false;
         if app.auto_server_reload {
+            app.auto_reload_done_for_version = app.remote_server_version.clone();
             app.append_reload_message("Reloading server with newer binary...");
             if let Err(err) = remote.reload().await {
+                app.auto_reload_done_for_version = None;
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to auto-reload server: {}. Use `/reload` to retry.",
                     err
@@ -2767,8 +2769,16 @@ pub(super) fn handle_server_event(
             crate::tui::workspace_client::sync_after_history(&session_id, &app.remote_sessions);
 
             if server_has_update == Some(true) && !app.pending_server_reload {
-                app.pending_server_reload = true;
-                app.set_status_notice("Server update available");
+                let already_reloaded = app
+                    .auto_reload_done_for_version
+                    .as_ref()
+                    .zip(app.remote_server_version.as_ref())
+                    .map(|(done, current)| done == current)
+                    .unwrap_or(false);
+                if !already_reloaded {
+                    app.pending_server_reload = true;
+                    app.set_status_notice("Server update available");
+                }
             }
             app.remote_server_short_name = server_name;
             if let Some(icon) = server_icon {

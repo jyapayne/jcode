@@ -455,6 +455,8 @@ pub struct App {
     remote_server_has_update: Option<bool>,
     // Auto-reload server when stale (set on first connect if server_has_update)
     pending_server_reload: bool,
+    // Server version at which we last triggered an auto-reload (prevents reload loops)
+    auto_reload_done_for_version: Option<String>,
     // Remote server short name (e.g., "running", "blazing")
     remote_server_short_name: Option<String>,
     // Remote server icon (e.g., "🔥", "🌫️")
